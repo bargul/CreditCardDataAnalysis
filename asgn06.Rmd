@@ -1,0 +1,377 @@
+---
+title: "R Notebook"
+output:
+  html_document:
+    toc: yes
+    df_print: paged
+  html_notebook: default
+  word_document:
+    toc: yes
+  pdf_document:
+    toc: yes
+---
+
+# Assignment 06
+Baran Gulmez\
+
+```{r setup, include=FALSE}
+rm(list = ls()) # remove all variables
+rm(list = ls(all.names = TRUE)) # remove all variables including hidden ones
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Load Libraries
+```{r, message = FALSE, warning = FALSE}
+library(mlr)
+library(tidyverse)
+library(DataExplorer)
+library(factoextra)
+library(dendextend)
+library(reshape2)
+library(ggforce)
+library(cluster)
+library(corrplot)
+library(ggplot2)
+library(ggpubr) # this might be conflicting (select function)
+library(MASS) # this might be conflicting (select function) 
+              # MASS library is used isoMDS()
+library(conflicted)
+library(factoextra) # for fviz
+library(clusterCrit) # cluster validation (intCriteria function)
+library(clValid) # (clValid function)
+```
+
+# Read Dataset
+The sample Dataset summarizes the usage behavior of about 9000 active credit card holders during the last 6 months. 
+
+CUSTID : Identification of Credit Card holder (Categorical)\
+BALANCE : Balance amount left in their account to make purchases\
+BALANCEFREQUENCY : How frequently the Balance is updated, score between 0 and 1 (1 = frequently updated, 0 = not frequently updated)\
+PURCHASES : Amount of purchases made from account\
+ONEOFFPURCHASES : Maximum purchase amount done in one-go\
+INSTALLMENTSPURCHASES : Amount of purchase done in installment\
+CASHADVANCE : Cash in advance given by the user\
+PURCHASESFREQUENCY : How frequently the Purchases are being made, score between 0 and 1 (1 = frequently purchased, 0 = not frequently purchased)\
+ONEOFFPURCHASESFREQUENCY : How frequently Purchases are happening in one-go (1 = frequently purchased, 0 = not frequently purchased)\
+PURCHASESINSTALLMENTSFREQUENCY : How frequently purchases in installments are being done (1 = frequently done, 0 = not frequently done)\
+CASHADVANCEFREQUENCY : How frequently the cash in advance being paid\
+CASHADVANCETRX : Number of Transactions made with "Cash in Advanced"\
+PURCHASESTRX : Numbe of purchase transactions made\
+CREDITLIMIT : Limit of Credit Card for user\
+PAYMENTS : Amount of Payment done by user\
+MINIMUM_PAYMENTS : Minimum amount of payments made by user\
+PRCFULLPAYMENT : Percent of full payment paid by user\
+TENURE : Tenure of credit card service for user\
+```{r, message = FALSE, warning = FALSE}
+dat = read.csv("input/CC GENERAL.csv", 
+               stringsAsFactors = F,
+               na.strings = c(" "))
+```      
+
+# Basic Analysis
+This dataset is quite useful since because of two reasons. The first is that the dataset does not need preprocessing since all features are numeric. The second is that there are more than enough data interms of both number of samples and number of features.
+## Glimpse
+```{r, message = FALSE, warning = FALSE}
+glimpse(dat)
+``` 
+
+## Missing Data
+An insignificant portion of the data is missing.
+```{r, message = FALSE, warning = FALSE}
+plot_missing(dat)
+``` 
+
+## Summaryy
+```{r, message = FALSE, warning = FALSE}
+summary(dat)
+``` 
+
+## Histograms 
+Here it is seen that almost all features are skewed.
+```{r, message = FALSE, warning = FALSE}
+plot_histogram(dat)
+``` 
+
+# Data Reorganization
+Missing data deleted and some useless CUST_ID deleted.
+```{r, message = FALSE, warning = FALSE}
+dat_reorg = dat %>% 
+  dplyr::select(-CUST_ID) %>% # calling select from dplyr to prevent conflict
+  drop_na()
+# 
+# shuffle data
+if(FALSE){
+set.seed(357) # fix seed
+dat_reorg_backup <- dat_reorg[sample(nrow(dat_reorg)), ] # generate random index using sample and 
+dat_reorg = dat_reorg_backup[1:100,1:ncol(dat_reorg_backup)] # choose first 100
+}
+
+``` 
+
+# Correlation
+```{r, message = FALSE, warning = FALSE}
+corrplot(cor(dat_reorg), diag = FALSE, type = "lower", tl.srt = 45, tl.col = "black", method = 'color', tl.cex = 0.4)
+``` 
+
+# PCA
+prcomp() expects the samples to be rows to be columns
+
+```{r, message = FALSE, warning = FALSE}
+dat_reorg_scaled = scale(dat_reorg)
+pca <-prcomp(dat_reorg_scaled)
+``` 
+## PCA Analysis
+Scree plot shows how much the principal components are responsible the PCA component is responsible of the variation of the data.
+```{r, message = FALSE, warning = FALSE}
+pca.var <- pca$sdev^2
+pca.var.per <- round(pca.var/sum(pca.var)*100, 1)
+barplot(pca.var.per, main="Scree Plot", xlab="Principal Component", ylab="Percent Variation")
+```
+format the data
+```{r, message = FALSE, warning = FALSE}
+pca.data <- data.frame(Sample=rownames(dat_reorg), X=pca$x[,1], Y=pca$x[,2])
+pca.data
+```
+plot the data but with indexes
+```{r, message = FALSE, warning = FALSE}
+ggplot(data=pca.data, aes(x=X, y=Y, label=Sample)) +
+  geom_text() +
+  xlab(paste("PC1 - ", pca.var.per[1], "%", sep="")) +
+  ylab(paste("PC2 - ", pca.var.per[2], "%", sep="")) +
+  theme_bw() +
+  ggtitle("PCA Graph")
+# just another way to draw first two principal components
+# plot(pca$x[,1], pca$x[,2], main="First two PCs", xlab = paste("PC1 - ", pca.var.per[1], "%", sep="") , ylab=paste("PC2 - ", pca.var.per[2], "%", sep=""))
+```
+Negative loading scores push left as positive ones push right.
+```{r, message = FALSE, warning = FALSE}
+loading_scores <- pca$rotation[,1]
+loading_scores_abs <- abs(loading_scores)
+loading_scores
+```
+
+## Multi-Dimensional Scaling (MDS) 
+Euclidean and manhattan distances are most widely used distance metrics. Therefore they are chosen as distance metrics. These two distances also usually work the best to my experience.
+```{r, message = FALSE, warning = FALSE}
+distEuc.matrix <- stats::dist(dat_reorg_scaled, method="euclidean") 
+distMnh.matrix <- stats::dist(dat_reorg_scaled, method="manhattan") 
+
+```
+### Classical Multi-Dimensional Scaling
+#### Euclidean Distance
+```{r, message = FALSE, warning = FALSE}
+mdsCmdEuc.stuff <- cmdscale(distEuc.matrix, eig=TRUE, x.ret=TRUE)
+mdsCmdEuc.var.per <- round(mdsCmdEuc.stuff$eig/sum(mdsCmdEuc.stuff$eig)*100, 1)
+# graph
+mdsCmdEuc.values <- mdsCmdEuc.stuff$points
+mdsCmdEuc.data <- base::data.frame(Sample=rownames(dat_reorg), X=mdsCmdEuc.values[,1], Y=mdsCmdEuc.values[,2])
+mdsCmdEuc.data
+ggplot(data=mdsCmdEuc.data, aes(x=X, y=Y, label=Sample)) +
+  geom_text() +
+  theme_bw() +
+  xlab(paste("MDS1 - ", mdsCmdEuc.var.per[1], "%", sep="")) +
+  ylab(paste("MDS2 - ", mdsCmdEuc.var.per[2], "%", sep=""))
+
+```
+#### Manhattan Distance
+```{r, message = FALSE, warning = FALSE}
+mdsCmdMnh.stuff <- cmdscale(distMnh.matrix, eig=TRUE, x.ret=TRUE)
+mdsCmdMnh.var.per <- round(mdsCmdMnh.stuff$eig/sum(mdsCmdMnh.stuff$eig)*100, 1)
+# graph
+mdsCmdMnh.values <- mdsCmdMnh.stuff$points
+mdsCmdMnh.data <- data.frame(Sample=rownames(dat_reorg),
+  X=mdsCmdMnh.values[,1],
+  Y=mdsCmdMnh.values[,2])
+ggplot(data=mdsCmdMnh.data, aes(x=X, y=Y, label=Sample)) +
+  geom_text() +
+  theme_bw() +
+  xlab(paste("MDS1 - ", mdsCmdMnh.var.per[1], "%", sep="")) +
+  ylab(paste("MDS2 - ", mdsCmdMnh.var.per[2], "%", sep=""))
+
+```
+### Metric Multi-Dimesional Scaling
+#### Euclidean Distance
+```{r, message = FALSE, warning = FALSE}
+mdsSamEuc.stuff <- sammon(distEuc.matrix)
+mdsSamEuc.var.per <- round(mdsSamEuc.stuff$eig/sum(mdsSamEuc.stuff$eig)*100, 1)
+# graph
+mdsSamEuc.values <- mdsSamEuc.stuff$points
+mdsSamEuc.data <- base::data.frame(Sample=rownames(dat_reorg), X=mdsSamEuc.values[,1], Y=mdsSamEuc.values[,2])
+mdsSamEuc.data
+ggplot(data=mdsSamEuc.data, aes(x=X, y=Y, label=Sample)) +
+  geom_text() +
+  theme_bw() +
+  xlab(paste("MDS1 - ", mdsSamEuc.var.per[1], "%", sep="")) +
+  ylab(paste("MDS2 - ", mdsSamEuc.var.per[2], "%", sep=""))
+
+```
+
+#### Manhattan Distance
+```{r, message = FALSE, warning = FALSE}
+mdsSamMnh.stuff <- sammon(distMnh.matrix)
+mdsSamMnh.var.per <- round(mdsSamMnh.stuff$eig/sum(mdsSamMnh.stuff$eig)*100, 1)
+# graph
+mdsSamMnh.values <- mdsSamMnh.stuff$points
+mdsSamMnh.data <- data.frame(Sample=rownames(dat_reorg),
+  X=mdsSamMnh.values[,1],
+  Y=mdsSamMnh.values[,2])
+ggplot(data=mdsSamMnh.data, aes(x=X, y=Y, label=Sample)) +
+  geom_text() +
+  theme_bw() +
+  xlab(paste("MDS1 - ", mdsSamMnh.var.per[1], "%", sep="")) +
+  ylab(paste("MDS2 - ", mdsSamMnh.var.per[2], "%", sep=""))
+
+```
+
+
+### Non-Metric Multi-Dimensional Scaling
+#### Euclidean Distance
+```{r, message = FALSE, warning = FALSE}
+mdsIsoEuc.stuff <- isoMDS(distEuc.matrix)
+# graph
+mdsIsoEuc.values <- mdsIsoEuc.stuff$points
+mdsIsoEuc.data <- data.frame(Sample=rownames(dat_reorg),
+  X=mdsIsoEuc.values[,1],
+  Y=mdsIsoEuc.values[,2])
+mdsIsoEuc.data
+ggplot(data=mdsIsoEuc.data, aes(x=X, y=Y, label=Sample)) +
+  geom_text() +
+  theme_bw() +
+  xlab(paste("MDS1 - ")) +
+  ylab(paste("MDS2 - "))
+
+```
+#### Manhattan Distance
+```{r, message = FALSE, warning = FALSE}
+mdsIsoMnh.stuff <- isoMDS(distMnh.matrix)
+# graph
+mdsIsoMnh.values <- mdsIsoMnh.stuff$points
+mdsIsoMnh.data <- data.frame(Sample=rownames(dat_reorg),
+  X=mdsIsoMnh.values[,1],
+  Y=mdsIsoMnh.values[,2])<
+mdsIsoMnh.data
+ggplot(data=mdsIsoMnh.data, aes(x=X, y=Y, label=Sample)) +
+  geom_text() +
+  theme_bw() +
+  xlab(paste("MDS1 - ")) +
+  ylab(paste("MDS2 - "))
+```
+## MDS Results
+There is not much difference between euclidean and manhattan distances. Both Classical MDS and Non-Metric MDS support this.  When Classical MDS and Non-Metric MDS are compared, classical MDS separates the samples into a wider spectrum which is better. This will help get more distinct groups during clustering.
+
+# Clustering
+The reason for me to seperate the data into 3 cluster is totally intuitively. I just assumed that people would be from low, mid and high income. But inspecting hierarchical clustering, there could be 4-6 clusters ideally. 
+
+## Hierarchical
+```{r, message = FALSE, warning = FALSE}
+clustHrc = hclust(distEuc.matrix , method = "ward.D")
+plot(clustHrc, labels = FALSE, sub = "", xlab = "", ylab = "Euclidian Dist")
+rect.hclust(clustHrc, k = 3)
+clustHrcClusts = cutree(clustHrc, k = 3)
+fviz_pca_ind(pca, habillage = clustHrcClusts)
+```
+
+
+## K-Means
+```{r, message = FALSE, warning = FALSE}
+# draw optimal number of cluster
+fviz_nbclust(dat_reorg_scaled, kmeans, method = "wss", k.max = 10)
+clustKm = kmeans(dat_reorg_scaled, centers = 3)
+fviz_pca_ind(pca, habillage = clustKm$cluster)
+``` 
+### Analyze Groups
+```{r, message = FALSE, warning = FALSE}
+clustKm1.index = which(clustKm$cluster==1)
+clustKm2.index = which(clustKm$cluster==2)
+clustKm3.index = which(clustKm$cluster==3)
+clustKm1.dat = dat_reorg[clustKm1.index,1:ncol(dat_reorg)]
+clustKm2.dat = dat_reorg[clustKm2.index,1:ncol(dat_reorg)]
+clustKm3.dat = dat_reorg[clustKm3.index,1:ncol(dat_reorg)]
+plot_histogram(clustKm1.dat, title="cluster 1")
+plot_histogram(clustKm2.dat, title="cluster 2")
+plot_histogram(clustKm3.dat, title="cluster 3")
+```
+After clustering the samples I inspected each cluster seperately. According to my intuitive assumption about having 3 income groups, the groups are: "rich", "middle class" and "poor". When the group 1 is inspected they have higher credit limit, balance and have higher purchase frequency. This and other features clearly reveals that this group is the rich one. Accordingly group 2 is the "middle class" and group 3 is the "poor" group.
+# Validation
+Dunn Index(DI), Davies-Bouldin(DBI) Index and Silhouette Coefficient are inspected. 
+
+Clustering gets better as Dunn Index increases. DI evaluates the clusters using the farthest points and in this dataset there are very far points which I think outliers. DI could be more meaningful if the dataset would not contain outliers. DI decreases as the number of clusters increase thus it indicates number of clusters being lower is better. 
+
+Clustering gets better as Davies-Bouldin Index decreases. DBI is a metric of seperation of clusters. When scores are inspected, hierarchical clustering gives much better DBI(Connectivity) scores than k-means clustering. So, hierachical clustering is much better at seperating clusters. This can also be visually seen when the colored clusters are inspected.
+
+Clustering gets better as Silhouette Coefficient increases. Since its range is between 0 and 1 the optimal value is 1. SC is expected to be higher than 0.5 and again hierarchical clustering is much better. 
+
+Even though we do these validation measures after clustering, in practice they can be applied before clustering in order to understand which configuration should be used. 
+
+```{r, message = FALSE, warning = FALSE}
+# https://rdrr.io/cran/clusterCrit/man/intCriteria.html
+intCriteria(dat_reorg_scaled, clustKm$cluster, c("Dunn", "dav", "silhouette") )
+```
+## Internal Validation
+```{r, message = FALSE, warning = FALSE}
+# https://www.rdocumentation.org/packages/clValid/versions/0.7/topics/clValid
+# https://cran.r-project.org/web/packages/clValid/vignettes/clValid.pdf
+# https://rdrr.io/cran/clValid/man/clValid-class.html
+valid.intern <- clValid(dat_reorg , 2:6, clMethods=c("hierarchical","kmeans"), validation="internal")
+summary(valid.intern)
+op <- par(no.readonly=TRUE)
+par(mfrow=c(2,2),mar=c(4,4,3,1))
+plot(valid.intern, legend=FALSE)
+plot(nClusters(valid.intern), measures(valid.intern,"Dunn")[,,1],type="n",axes=F,xlab="",ylab="")
+legend("center", clusterMethods(valid.intern), col=1:9, lty=1:9, pch=paste(1:9))
+par(op)
+```
+Above results show that optimal scores are achieved by hierarchical clustering with k=2.
+
+## Stability Validation
+Stabilty validation validates reproducibility of clustering solution another sample.The included measures are the average proportion of non-overlap (APN), the average distance (AD), the average distance between means (ADM), and the figure of merit (FOM) (Datta and Datta, 2003; Yeung et al., 2001). . In all cases the average is taken over all the deleted columns, and all measures should be minimized.
+```{r, message = FALSE, warning = FALSE}
+valid.stab <- clValid(dat_reorg , 2:6, clMethods=c("hierarchical","kmeans"), validation="stability")
+summary(valid.stab)
+par(mfrow=c(2,2),mar=c(4,4,3,1))
+plot(valid.stab, measure=c("APN","AD","ADM"),legend=FALSE)
+plot(nClusters(valid.stab),measures(valid.stab,"APN")[,,1],type="n",axes=F,xlab="",ylab="")
+legend("center", clusterMethods(valid.stab), col=1:9, lty=1:9, pch=paste(1:9))
+par(op)
+```
+Here we see that hierarchical-2 and kmeans-6 performs the best in terms of stability. But inb internal validation hierarchical 2 was superior in all 3 metrics. Thus we can conclude that hierarchical-2 is the best. 
+
+```{r, message = FALSE, warning = FALSE}
+valid.stabRankWeighs <-getRanksWeights(valid.stab)
+print(valid.stabRankWeighs$ranks[,1:3], quote=FALSE)
+```
+
+
+# Conclusion 
+In each section comments that are related to that section are made. So in the conclusion general comments are presented.
+The dataset is hard to work with since the data is not best suitable for clustering. Clusters almost overlap and first two components of PCA only cover the %47(27+20) of the data. For example, if first two components would add up to %80 percent of the data we could see much distinct and non overlapping clusters. Since my dataset also does not have labels, there is no way to verify if the clustering is correct. Thus, this dataset is rather open to comment. 
+
+
+
+
+
+```{r, message = FALSE, warning = FALSE}
+
+```
+
+```{r, message = FALSE, warning = FALSE}
+
+```
+
+```{r, message = FALSE, warning = FALSE}
+
+```
+
+```{r, message = FALSE, warning = FALSE}
+
+```
+
+```{r, message = FALSE, warning = FALSE}
+
+```
+
+```{r, message = FALSE, warning = FALSE}
+
+```
+
+
